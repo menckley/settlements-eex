@@ -5,8 +5,8 @@ Rapport quotidien des settlements EEX envoyé par e-mail, et archive des séance
 Paramètres lus dans les variables d'environnement (Secrets du dépôt GitHub) :
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
   EMAIL_TO (adresses séparées par des virgules), EMAIL_FROM (optionnel),
-  MODE (optionnel) : "envoi" (défaut), "apercu" (aucun envoi, aucune archive)
-                     ou "explorer" (affiche les réponses brutes d'EEX).
+  MODE (optionnel) : "envoi" (défaut), "apercu" (aperçu du mail, rien n'est envoyé ni
+                     stocké) ou "explorer" (affiche les réponses brutes d'EEX).
 
 Contrats suivis (dernière séance, « la veille ») :
   - Power Base France : Month-Ahead, Cal-27, Cal-28
@@ -16,9 +16,13 @@ Contrats suivis (dernière séance, « la veille ») :
     sur les GO_MATURITIES prochaines échéances de janvier. L'échéance de janvier A
     couvre la production de mars à décembre de l'année A-1 (spécification EEX).
 
-Archive : chaque settlement trouvé est enregistré dans data/settlements/session=AAAA-MM-JJ.csv
-(une ligne par contrat). Le workflow GitHub committe ce dossier : il constitue la base de
-données lue par les autres projets (voir archive.py).
+Historique : tous les settlements sont stockés dans un seul fichier, data/settlements.csv
+(une ligne par séance et par contrat). À chaque lancement, chaque contrat est interrogé sur les
+HISTORY_DAYS derniers jours et toutes les séances trouvées sont ajoutées ou mises à jour :
+le premier lancement récupère d'un coup tout ce qu'EEX publie encore (environ 45 jours), et
+une séance manquée un jour est rattrapée le lendemain. Les séances plus anciennes déjà
+stockées ne sont jamais supprimées. Le workflow GitHub committe le fichier : c'est la base
+de données lue par les autres projets (voir archive.py).
 
 Source : l'API publique qui alimente les tableaux de www.eex.com (non documentée, peut
 évoluer sans préavis). Lecture stricte : une seule forme de requête par contrat, colonnes
@@ -78,13 +82,13 @@ GUARANTEES_OF_ORIGIN = {
 GO_MATURITIES = 3     # échéances de janvier suivies, à partir de la première après la séance
 
 API_URL = "https://api.eex-group.com/pub/market-data/table-data"
-LOOKBACK_DAYS = 10    # historique demandé avant la séance (pour la variation)
 PAUSE = 1.0           # secondes entre deux requêtes (limite de débit EEX)
 REQUIRED_COLS = ("shortCode", "maturityDate", "tradeDate", "settlPx")
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 APERCU = MODE == "apercu"
 EXPLORE = MODE == "explorer"
+HISTORY_DAYS = 60     # fenêtre interrogée à chaque lancement (EEX ne publie qu'environ 45 jours)
 
 HEADERS = {
     "Accept": "application/json",
@@ -118,12 +122,11 @@ class Contract:
     maturity: str         # AAAAMM, paramètre `maturity` de la requête
     maturity_type: str    # Month / Year
 
-    def params(self, session: date) -> dict:
+    def params(self, start: date, end: date) -> dict:
         return {
             "shortCode": self.short_code, "commodity": self.commodity, "pricing": "F",
             "area": self.area, "product": self.product, "maturity": self.maturity,
-            "startDate": (session - timedelta(days=LOOKBACK_DAYS)).isoformat(),
-            "endDate": date.today().isoformat(),
+            "startDate": start.isoformat(), "endDate": end.isoformat(),
             "maturityType": self.maturity_type, "isRolling": "true",
         }
 
@@ -212,29 +215,57 @@ def parse_history(payload: dict, c: Contract) -> tuple[pd.Series, str | None, st
     return series, payload.get("currency"), payload.get("uOM")
 
 
-def collect(session: date) -> tuple[list[dict], list[str]]:
-    """Settlement de chaque contrat à la séance. Renvoie (lignes, anomalies)."""
-    rows, errors = [], []
-    for c in contracts_for(session):
-        row = {**c.__dict__, "session": session, "settlement": None, "prix_prec": None,
-               "devise": None, "unite": None}
+def fetch_window(today: date) -> tuple[list[dict], dict]:
+    """Interroge chaque contrat une fois sur les HISTORY_DAYS derniers jours.
+
+    Renvoie (lignes d'historique à stocker, détail par contrat). Pour chaque séance de la
+    fenêtre, on retient les contrats suivis ce jour-là : Month-Ahead du mois suivant la séance,
+    Cal suivis, GO des échéances postérieures à l'année de la séance.
+    """
+    start = today - timedelta(days=HISTORY_DAYS)
+    sessions = [start + timedelta(days=i) for i in range((today - start).days)
+                if (start + timedelta(days=i)).weekday() < 5]
+    by_session = {s: contracts_for(s) for s in sessions}
+    unique = sorted({c for cs in by_session.values() for c in cs}, key=lambda c: (c.marche, c.maturity))
+    fetched = {}
+    for c in unique:
         try:
-            series, currency, unit = parse_history(call_api(c.params(session)), c)
-            row.update(devise=currency, unite=unit)
-            value = series.get(session)
-            if value is None or pd.isna(value):
-                before = [t for t in series.dropna().index if t < date.today()]
-                hint = f" (dernière séance disponible : {max(before):%d/%m/%Y})" if before else ""
-                raise DataNotFoundError(f"settlement du {session:%d/%m/%Y} non trouvé{hint}")
-            previous = series[(series.index < session)].dropna()
-            row.update(settlement=float(value),
-                       prix_prec=float(previous.iloc[-1]) if len(previous) else None)
+            series, currency, unit = parse_history(call_api(c.params(start, today)), c)
+            fetched[c] = {"series": series.dropna(), "devise": currency, "unite": unit, "error": None}
         except PermissionError:
             raise
         except Exception as e:  # une erreur sur un contrat n'empêche pas les autres
-            errors.append(f"{c.marche} {c.contrat} : {e}")
-        rows.append(row)
+            fetched[c] = {"series": pd.Series(dtype=float), "devise": None, "unite": None, "error": str(e)}
         time.sleep(PAUSE)
+
+    history = []
+    for s, cs in by_session.items():
+        for c in cs:
+            f = fetched[c]
+            if s in f["series"].index:
+                history.append({**c.__dict__, "session": s, "settlement": float(f["series"][s]),
+                                "devise": f["devise"], "unite": f["unite"]})
+    return history, fetched
+
+
+def report_rows(session: date, fetched: dict) -> tuple[list[dict], list[str]]:
+    """Lignes du mail pour la séance cible (settlement et séance précédente) et anomalies."""
+    rows, errors = [], []
+    for c in contracts_for(session):
+        f = fetched[c]
+        row = {**c.__dict__, "session": session, "settlement": None, "prix_prec": None,
+               "devise": f["devise"], "unite": f["unite"]}
+        if f["error"]:
+            errors.append(f"{c.marche} {c.contrat} : {f['error']}")
+        elif session not in f["series"].index:
+            before = [t for t in f["series"].index if t < session]
+            hint = f" (dernière séance disponible : {max(before):%d/%m/%Y})" if before else ""
+            errors.append(f"{c.marche} {c.contrat} : settlement du {session:%d/%m/%Y} non trouvé{hint}")
+        else:
+            previous = f["series"][f["series"].index < session]
+            row.update(settlement=float(f["series"][session]),
+                       prix_prec=float(previous.iloc[-1]) if len(previous) else None)
+        rows.append(row)
     return rows, errors
 
 
@@ -396,7 +427,7 @@ def explore() -> None:
     for c in contracts_for(session):
         print(f"\n===== {c.marche} / {c.contrat} ({c.short_code}, maturity {c.maturity}, {c.maturity_type}) =====")
         try:
-            payload = call_api(c.params(session))
+            payload = call_api(c.params(session - timedelta(days=10), date.today()))
             if isinstance(payload, dict):
                 print(f"clés : {list(payload)} | devise : {payload.get('currency')} | unité : {payload.get('uOM')}")
                 print(f"header : {payload.get('header')}")
@@ -415,12 +446,12 @@ def main() -> None:
         return
     session = target_session()
     try:
-        rows, errors = collect(session)
-        found = [r for r in rows if r["settlement"] is not None]
-        if found:
-            if not APERCU:
-                path = archive.save_session(found, session)
-                print(f"Archive : {path} ({len(found)} contrats)")
+        history, fetched = fetch_window(date.today())
+        if history and not APERCU:
+            path, added, total = archive.upsert(history)
+            print(f"Historique : {path} ({added} lignes ajoutées ou mises à jour, {total} au total)")
+        rows, errors = report_rows(session, fetched)
+        if any(r["settlement"] is not None for r in rows):
             message = build_report(rows, errors, session)
         else:
             message = build_not_found(errors, session)
