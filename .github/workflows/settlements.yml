@@ -2,16 +2,23 @@ name: Settlements EEX
 
 on:
   schedule:
-    - cron: "0 8 * * *"        # du lundi au vendredi à 9h00
+    - cron: "0 8 * * *"        # tous les jours à 9h00
       timezone: "Europe/Paris"   # heure de Paris, été comme hiver
   workflow_dispatch:             # bouton "Run workflow" pour lancer à la main
+
+permissions:
+  contents: write                # nécessaire pour committer l'historique data/
+
+concurrency:
+  group: settlements-eex
+  cancel-in-progress: false
 
 jobs:
   rapport:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Récupérer le code
+      - name: Récupérer le code et l'historique
         uses: actions/checkout@v4
 
       - name: Installer Python
@@ -23,7 +30,7 @@ jobs:
       - name: Installer les dépendances
         run: pip install -r requirements.txt
 
-      - name: Récupérer les settlements et envoyer l'e-mail
+      - name: Récupérer les settlements, stocker l'historique et envoyer l'e-mail
         run: python rapport_settlements.py
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -31,3 +38,16 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+
+      - name: Committer l'historique
+        if: always()                 # l'historique est conservé même si l'envoi du mail échoue
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "Rien de nouveau à stocker"
+          else
+            git commit -m "Historique settlements EEX $(date -u +%Y-%m-%d)"
+            git push
+          fi
