@@ -1,5 +1,7 @@
 # settlements-eex
 
+> **Notice détaillée** — chaque calcul, chaque paramètre et les dépendances entre les dépôts : [docs/NOTICE.md](docs/NOTICE.md)
+
 Collecte quotidienne des settlements EEX (power France, gaz TTF / PEG, garanties d'origine
 européennes), e-mail récapitulatif, et historique de tous les prix.
 
