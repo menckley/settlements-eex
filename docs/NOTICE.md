@@ -11,10 +11,12 @@ récupérés, contrôlés et stockés, comment l'e-mail est construit, et commen
 ```mermaid
 flowchart LR
     EEX[(API publique eex.com<br/>table-data)]
-    subgraph SETTL[settlements-eex]
+    subgraph SETTL[settlements-eex · public]
         R[rapport_settlements.py]
-        H[(data/settlements.csv)]
         M[e-mail quotidien]
+    end
+    subgraph SDATA[settlements-eex-data · privé]
+        H[(settlements.csv)]
     end
     subgraph OTHERS[autres dépôts]
         HPFC[power-hpfc<br/>son propre client EEX]
@@ -26,7 +28,10 @@ flowchart LR
     EEX --> HPFC --> PRICER
 ```
 
-- **Autonome.** `settlements-eex` ne dépend d'aucun autre dépôt, et aucun autre dépôt ne le lit.
+- **Autonome.** `settlements-eex` ne dépend d'aucun des autres dépôts de code, et aucun ne le lit. Son historique
+  est dans le dépôt **privé** `menckley/settlements-eex-data` : la rediffusion des données EEX est soumise aux
+  conditions de licence d'EEX. Ce dépôt est vu comme le dossier `data/` : clone local placé à cet endroit (ignoré par
+  git), second `actions/checkout` dans le workflow. Le chemin du code (`data/settlements.csv`) n'a pas changé.
 - **Même source que power-hpfc, code séparé.** Il interroge la même API publique `table-data` d'eex.com, avec
   sa propre implémentation. Son périmètre est différent :
   - **settlements-eex** : quelques contrats de référence en power, en gaz et en garanties d'origine, pour un
@@ -42,13 +47,15 @@ flowchart LR
 
 Fichier `.github/workflows/settlements.yml` :
 
-- **Déclenchement.** `cron: "0 5 * * *"` avec `timezone: "Europe/Paris"`, plus le bouton *Run workflow*.
-  Attention, le commentaire du fichier indique « 9h00 », alors que l'expression déclenche à 05:00.
+- **Déclenchement.** `cron: "0 5 * * *"` avec `timezone: "Europe/Paris"` (05:00 à Paris), plus le bouton
+  *Run workflow*.
   `concurrency` empêche deux runs simultanés ; durée maximale 20 minutes.
 - **Étapes :**
+  0. Récupération du code, puis du dépôt de données dans `data/` (secret `DATA_REPO_TOKEN`, jeton GitHub
+     *fine-grained* avec *Contents : Read and write* sur `menckley/settlements-eex-data`).
   1. Installation de Python 3.12 et de `requirements.txt` (`requests`, `pandas`).
   2. `python rapport_settlements.py` avec les secrets SMTP : collecte, stockage, e-mail.
-  3. Commit de `data/` s'il y a du nouveau : « Historique settlements EEX AAAA-MM-JJ ». Cette étape tourne
+  3. Commit dans `data/`, poussé **dans le dépôt de données**, s'il y a du nouveau : « Historique settlements EEX AAAA-MM-JJ ». Cette étape tourne
      **même si l'envoi de l'e-mail a échoué** (`if: always()`) : l'historique n'est jamais perdu.
 - **Secrets GitHub** (jamais dans le code) : `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_TO`
   (adresses séparées par des virgules), et `EMAIL_FROM` en option (par défaut `SMTP_USER`).
@@ -159,5 +166,5 @@ $$\Delta = P_{\text{séance}} - P_{\text{précédente}}, \qquad \Delta\% = \frac
 - **API non documentée** : elle peut changer sans préavis. Le mode `explorer` sert à le diagnostiquer.
 - **Contrats fixes.** `CALENDARS = [2027, 2028]` est à faire avancer chaque année. Les codes produits sont
   relevés sur eex.com.
-- **Licence des données.** La rediffusion des données EEX est soumise aux conditions de licence d'EEX : à
-  vérifier avant de publier `data/settlements.csv` dans un dépôt public.
+- **Licence des données.** La rediffusion des données EEX est soumise aux conditions de licence d'EEX : c'est
+  pourquoi l'historique est dans un dépôt privé.

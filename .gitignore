@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+apercu_email.html
+*.tmp
+
+# Historique : clone du dépôt privé menckley/settlements-eex-data (voir README, « Données »)
+data/

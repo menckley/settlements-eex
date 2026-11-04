@@ -2,12 +2,12 @@ name: Settlements EEX
 
 on:
   schedule:
-    - cron: "0 5 * * *"        # tous les jours à 9h00
+    - cron: "0 5 * * *"        # tous les jours à 05:00
       timezone: "Europe/Paris"   # heure de Paris, été comme hiver
   workflow_dispatch:             # bouton "Run workflow" pour lancer à la main
 
 permissions:
-  contents: write                # nécessaire pour committer l'historique data/
+  contents: read                 # le code n'est que lu ; l'historique est poussé dans le dépôt de données
 
 concurrency:
   group: settlements-eex
@@ -18,8 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Récupérer le code et l'historique
+      - name: Récupérer le code
         uses: actions/checkout@v4
+
+      - name: Récupérer l'historique (dépôt privé menckley/settlements-eex-data, dans data/)
+        uses: actions/checkout@v4
+        with:
+          repository: menckley/settlements-eex-data
+          token: ${{ secrets.DATA_REPO_TOKEN }}   # jeton GitHub : Contents en lecture et écriture sur ce dépôt
+          path: data
 
       - name: Installer Python
         uses: actions/setup-python@v5
@@ -39,12 +46,13 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
 
-      - name: Committer l'historique
+      - name: Committer l'historique dans le dépôt de données
         if: always()                 # l'historique est conservé même si l'envoi du mail échoue
+        working-directory: data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
+          git add -A
           if git diff --cached --quiet; then
             echo "Rien de nouveau à stocker"
           else

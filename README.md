@@ -7,7 +7,16 @@ européennes), e-mail récapitulatif, et historique de tous les prix.
 
 ## Historique
 
-Un seul fichier : **`data/settlements.csv`**, une ligne par séance et par contrat :
+Un seul fichier : **`data/settlements.csv`**, une ligne par séance et par contrat. Le dossier `data/` **n'est pas
+dans ce dépôt** : c'est un clone du dépôt privé `menckley/settlements-eex-data` (la rediffusion des données EEX est
+soumise aux conditions de licence d'EEX).
+
+- **Workflow** : récupère le code, puis le dépôt de données dans `data/` avec le secret `DATA_REPO_TOKEN` (jeton
+  GitHub *fine-grained*, **Contents : Read and write** sur `menckley/settlements-eex-data`), et y pousse le commit
+  du jour.
+- **En local** : `git clone https://github.com/menckley/settlements-eex-data.git data`.
+
+Colonnes :
 
 | colonne | contenu |
 |---|---|
@@ -19,7 +28,7 @@ Un seul fichier : **`data/settlements.csv`**, une ligne par séance et par contr
 À chaque lancement, chaque contrat est interrogé sur les 60 derniers jours et toutes les séances
 trouvées sont ajoutées (ou mises à jour) : le premier lancement récupère tout ce qu'EEX publie
 encore (environ 45 jours), une séance manquée est rattrapée le lendemain, et rien n'est jamais
-supprimé. Le workflow committe le fichier chaque jour.
+supprimé. Le workflow committe le fichier chaque jour dans le dépôt de données.
 
 Lecture en Python :
 
@@ -38,3 +47,7 @@ python -m pytest                              # tests hors ligne (pip install py
 
 Règle : aucune donnée n'est inventée. Un contrat sans settlement à la séance est signalé dans
 le mail (« Données manquantes ») et n'est pas stocké.
+
+## Licence
+
+Code sous licence [MIT](LICENSE). Les données ne sont pas incluses (dépôt privé).

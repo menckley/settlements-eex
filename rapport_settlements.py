@@ -461,7 +461,7 @@ def main() -> None:
         deliver(*message)
     except (smtplib.SMTPException, OSError) as e:
         raise SystemExit(f"\nÉchec de l'envoi de l'e-mail via {SMTP_HOST}:{SMTP_PORT} → {e!r}\n"
-                         "Vérifier SMTP_HOST, SMTP_PORT, SMTP_USER et SMTP_PASSWORD.")
+                         "Vérifier SMTP_HOST, SMTP_PORT, SMTP_USER et SMTP_PASSWORD.") from e
 
 
 if __name__ == "__main__":
