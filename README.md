@@ -2,8 +2,11 @@
 
 > **Notice détaillée** — chaque calcul, chaque paramètre et les dépendances entre les dépôts : [docs/NOTICE.md](docs/NOTICE.md)
 
-Collecte quotidienne des settlements EEX (power France, gaz TTF / PEG, garanties d'origine
-européennes), e-mail récapitulatif, et historique de tous les prix.
+Collecte quotidienne des settlements EEX (power France, courbe gaz TTF / PEG, garanties
+d'origine européennes), e-mail récapitulatif, et historique de tous les prix.
+
+Gaz TTF et PEG : toute la courbe des contrats vérifiés est stockée (Month-Ahead à M+6, Cal+1 à
+Cal+3, glissants) ; l'e-mail n'affiche que le Month-Ahead et les deux premiers Cal.
 
 ## Historique
 

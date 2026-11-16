@@ -67,14 +67,21 @@ Fichier `.github/workflows/settlements.yml` :
 | Marché | Contrats | Codes EEX (`shortCode`) | Paramètres |
 |---|---|---|---|
 | Power Base France | Month-Ahead, Cal-27, Cal-28 | F7BM (mois), F7BY (année) | `commodity=POWER`, `area=FR`, `product=Base` |
-| Gaz TTF | Month-Ahead, Cal-27, Cal-28 | G3BM, G3BY | `commodity=NATGAS`, `area=TTF` |
-| Gaz PEG | Month-Ahead, Cal-27, Cal-28 | G5BM, G5BY | `commodity=NATGAS`, `area=PEG` |
+| Gaz TTF | Month-Ahead, M+2 … M+6, Cal+1 … Cal+3 | G3BM, G3BY | `commodity=NATGAS`, `area=TTF` |
+| Gaz PEG | Month-Ahead, M+2 … M+6, Cal+1 … Cal+3 | G5BM, G5BY | `commodity=NATGAS`, `area=PEG` |
 | GO Solaire (EU) | 3 prochaines échéances de janvier | EGOS | `commodity=GO`, `area=EU`, `product=Solar` |
 | GO Renouvelable (EU) | idem | EGOE | `product=Renewable Power` |
 | GO Hydraulique (EU) | idem | EGOH | `product=Hydro` |
 
-- **Month-Ahead** = le mois qui suit la **séance** (`next_month`). Les années suivies sont fixées dans
-  `CALENDARS = [2027, 2028]`.
+- **Month-Ahead** = le mois qui suit la **séance** (`next_month`). Pour le power, les années suivies sont
+  fixées dans `CALENDARS = [2027, 2028]`.
+- **Courbe gaz (TTF, PEG).** Elle est glissante, donc rien n'est à mettre à jour à la main : les
+  `GAS_MONTHS = 6` mois qui suivent la séance (`Month-Ahead`, puis `M+2` … `M+6`) et les `GAS_YEARS = 3`
+  années civiles suivantes (`Cal-27`, `Cal-28`, `Cal-29` pour une séance de 2026). Tout est stocké. L'e-mail
+  n'affiche que les contrats marqués `in_report` : le Month-Ahead et les `GAS_REPORT_YEARS = 2` premiers Cal.
+- **Un contrat, une requête.** Un même contrat change de libellé selon la séance : décembre est `M+2` en
+  octobre et `Month-Ahead` en novembre. Il est interrogé une seule fois par lancement (`request_key`), et
+  chaque séance de l'historique porte le libellé valable ce jour-là.
 - **Garanties d'origine.** Ce sont les échéances de janvier strictement postérieures à l'année de la séance
   (`GO_MATURITIES = 3`). Spécification EEX : l'échéance de janvier A couvre la production de mars à décembre de
   l'année A − 1. Le contrat est donc libellé « Prod. A−1 ».
@@ -164,7 +171,11 @@ $$\Delta = P_{\text{séance}} - P_{\text{précédente}}, \qquad \Delta\% = \frac
 ## 8. Limites
 
 - **API non documentée** : elle peut changer sans préavis. Le mode `explorer` sert à le diagnostiquer.
-- **Contrats fixes.** `CALENDARS = [2027, 2028]` est à faire avancer chaque année. Les codes produits sont
-  relevés sur eex.com.
+- **Contrats fixes (power).** `CALENDARS = [2027, 2028]` est à faire avancer chaque année. Les codes produits
+  sont relevés sur eex.com.
+- **Gaz : contrats non couverts.** Trimestres, saisons, Day-Ahead, week-end et spot n'ont pas encore de code
+  vérifié. Ils ne seront ajoutés qu'après avoir relevé sur eex.com la requête exacte (règle : rien n'est supposé).
+- **Historique limité.** L'API ne publie qu'environ 45 jours de séances : l'historique commence au premier
+  lancement et s'allonge ensuite. Les années antérieures ne sont pas récupérables par ce moyen.
 - **Licence des données.** La rediffusion des données EEX est soumise aux conditions de licence d'EEX : c'est
   pourquoi l'historique est dans un dépôt privé.

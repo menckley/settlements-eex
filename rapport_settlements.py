@@ -10,8 +10,10 @@ Paramètres lus dans les variables d'environnement (Secrets du dépôt GitHub) :
 
 Contrats suivis (dernière séance, « la veille ») :
   - Power Base France : Month-Ahead, Cal-27, Cal-28
-  - Gaz naturel TTF   : Month-Ahead, Cal-27, Cal-28
-  - Gaz naturel PEG   : Month-Ahead, Cal-27, Cal-28
+  - Gaz naturel TTF et PEG : courbe complète des contrats vérifiés, soit les GAS_MONTHS
+    prochains mois (Month-Ahead, M+2…) et les GAS_YEARS prochaines années civiles
+    (Cal glissants). Tout est stocké ; l'e-mail n'affiche que le Month-Ahead et les deux
+    premiers Cal, comme pour le power.
   - Garanties d'origine européennes (futures EEX) : solaire, renouvelable, hydraulique,
     sur les GO_MATURITIES prochaines échéances de janvier. L'échéance de janvier A
     couvre la production de mars à décembre de l'année A-1 (spécification EEX).
@@ -34,7 +36,7 @@ import os
 import smtplib
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -72,7 +74,13 @@ FORWARDS = {
     "Gaz PEG":           {"commodity": "NATGAS", "area": "PEG", "product": "Base",
                           "month": "G5BM", "year": "G5BY"},
 }
-CALENDARS = [2027, 2028]
+CALENDARS = [2027, 2028]     # power : années suivies (à faire avancer chaque année)
+
+# Gaz (TTF, PEG) : courbe glissante, rien à mettre à jour à la main.
+GAS_MARKETS = ("Gaz TTF", "Gaz PEG")
+GAS_MONTHS = 6       # Month-Ahead (M+1) … M+6
+GAS_YEARS = 3        # Cal+1 … Cal+3 (années civiles suivant la séance)
+GAS_REPORT_YEARS = 2 # Cal affichés dans l'e-mail (les premiers)
 
 GUARANTEES_OF_ORIGIN = {
     "GO Solaire (EU)":      {"commodity": "GO", "area": "EU", "product": "Solar", "code": "EGOS"},
@@ -121,6 +129,13 @@ class Contract:
     short_code: str
     maturity: str         # AAAAMM, paramètre `maturity` de la requête
     maturity_type: str    # Month / Year
+    # Affiché dans l'e-mail ? Hors comparaison : un contrat reste le même qu'il soit affiché ou non.
+    in_report: bool = field(default=True, compare=False)
+
+    @property
+    def request_key(self) -> tuple:
+        """Ce qui identifie le contrat auprès d'EEX, indépendamment de son libellé."""
+        return (self.commodity, self.area, self.product, self.short_code, self.maturity, self.maturity_type)
 
     def params(self, start: date, end: date) -> dict:
         return {
@@ -145,9 +160,31 @@ def next_month(d: date) -> date:
     return date(d.year + (d.month == 12), d.month % 12 + 1, 1)
 
 
+def add_months(d: date, n: int) -> date:
+    """Premier jour du n-ième mois après celui de d."""
+    k = d.month - 1 + n
+    return date(d.year + k // 12, k % 12 + 1, 1)
+
+
+def month_label(k: int) -> str:
+    return "Month-Ahead" if k == 1 else f"M+{k}"
+
+
 def contracts_for(session: date) -> list[Contract]:
     out = []
     for name, p in FORWARDS.items():
+        if name in GAS_MARKETS:
+            # Courbe glissante : M+1 … M+GAS_MONTHS, puis Cal+1 … Cal+GAS_YEARS
+            for k in range(1, GAS_MONTHS + 1):
+                m = add_months(session, k)
+                out.append(Contract(name, month_label(k), f"{MOIS_FR[m.month - 1]} {m.year}",
+                                    p["commodity"], p["area"], p["product"], p["month"], f"{m:%Y%m}",
+                                    "Month", in_report=k == 1))
+            for i, y in enumerate(range(session.year + 1, session.year + 1 + GAS_YEARS)):
+                out.append(Contract(name, f"Cal-{y % 100}", str(y), p["commodity"], p["area"],
+                                    p["product"], p["year"], f"{y}01", "Year",
+                                    in_report=i < GAS_REPORT_YEARS))
+            continue
         m = next_month(session)
         out.append(Contract(name, "Month-Ahead", f"{MOIS_FR[m.month - 1]} {m.year}", p["commodity"],
                             p["area"], p["product"], p["month"], f"{m:%Y%m}", "Month"))
@@ -226,17 +263,23 @@ def fetch_window(today: date) -> tuple[list[dict], dict]:
     sessions = [start + timedelta(days=i) for i in range((today - start).days)
                 if (start + timedelta(days=i)).weekday() < 5]
     by_session = {s: contracts_for(s) for s in sessions}
-    unique = sorted({c for cs in by_session.values() for c in cs}, key=lambda c: (c.marche, c.maturity))
-    fetched = {}
-    for c in unique:
+    all_contracts = {c for cs in by_session.values() for c in cs}
+    # Un même contrat peut changer de libellé selon la séance (décembre = M+2 en octobre,
+    # Month-Ahead en novembre) : on l'interroge une seule fois, quel que soit son libellé.
+    by_request: dict[tuple, Contract] = {}
+    for c in sorted(all_contracts, key=lambda c: (c.marche, c.maturity, c.contrat)):
+        by_request.setdefault(c.request_key, c)
+    results = {}
+    for key, c in by_request.items():
         try:
             series, currency, unit = parse_history(call_api(c.params(start, today)), c)
-            fetched[c] = {"series": series.dropna(), "devise": currency, "unite": unit, "error": None}
+            results[key] = {"series": series.dropna(), "devise": currency, "unite": unit, "error": None}
         except PermissionError:
             raise
         except Exception as e:  # une erreur sur un contrat n'empêche pas les autres
-            fetched[c] = {"series": pd.Series(dtype=float), "devise": None, "unite": None, "error": str(e)}
+            results[key] = {"series": pd.Series(dtype=float), "devise": None, "unite": None, "error": str(e)}
         time.sleep(PAUSE)
+    fetched = {c: results[c.request_key] for c in all_contracts}
 
     history = []
     for s, cs in by_session.items():
@@ -252,6 +295,8 @@ def report_rows(session: date, fetched: dict) -> tuple[list[dict], list[str]]:
     """Lignes du mail pour la séance cible (settlement et séance précédente) et anomalies."""
     rows, errors = [], []
     for c in contracts_for(session):
+        if not c.in_report:
+            continue
         f = fetched[c]
         row = {**c.__dict__, "session": session, "settlement": None, "prix_prec": None,
                "devise": f["devise"], "unite": f["unite"]}

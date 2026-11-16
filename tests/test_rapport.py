@@ -43,9 +43,14 @@ def no_pause(monkeypatch):
     monkeypatch.setattr(rs, "PAUSE", 0)
 
 
+N_GAZ = rs.GAS_MONTHS + rs.GAS_YEARS                       # contrats par marché gazier
+N_TOTAL = 3 + 2 * N_GAZ + 3 * rs.GO_MATURITIES              # power + TTF/PEG + GO
+
+
 def test_contrats_suivis():
     cs = rs.contracts_for(SESSION)
-    assert len(cs) == 3 * 3 + 3 * rs.GO_MATURITIES
+    assert len(cs) == N_TOTAL
+    assert len({c for c in cs}) == len(cs)                   # aucun contrat en double
     egos = {(c.maturity, c.contrat) for c in cs if c.short_code == "EGOS"}
     assert egos == {("202701", "Prod. 2026"), ("202801", "Prod. 2027"), ("202901", "Prod. 2028")}
     p = next(c for c in cs if c.short_code == "EGOE").params(date(2026, 10, 12), date(2026, 10, 16))
@@ -64,7 +69,7 @@ def test_historique_complet_en_un_lancement(monkeypatch, tmp_path):
     ma = df[df["contrat"] == "Month-Ahead"]
     assert set(ma.loc[ma["session"] == date(2026, 9, 30), "maturity"]) == {"202610"}
     assert set(ma.loc[ma["session"] == SESSION, "maturity"]) == {"202611"}
-    assert len(df[df["session"] == SESSION]) == 18 and added == total == len(df)
+    assert len(df[df["session"] == SESSION]) == N_TOTAL and added == total == len(df)
 
 
 def test_relance_sans_doublon_et_historique_conserve(monkeypatch, tmp_path):
@@ -107,3 +112,29 @@ def test_historique_refuse_les_valeurs_manquantes(tmp_path):
     row = {c: "x" for c in archive.COLUMNS} | {"session": SESSION, "settlement": None}
     with pytest.raises(ValueError):
         archive.upsert([row], tmp_path / "settlements.csv")
+
+
+def test_courbe_gaz_glissante():
+    ttf = [c for c in rs.contracts_for(SESSION) if c.marche == "Gaz TTF"]
+    mois = [(c.contrat, c.maturity) for c in ttf if c.maturity_type == "Month"]
+    assert mois == [("Month-Ahead", "202611"), ("M+2", "202612"), ("M+3", "202701"),
+                    ("M+4", "202702"), ("M+5", "202703"), ("M+6", "202704")]
+    cals = [(c.contrat, c.maturity) for c in ttf if c.maturity_type == "Year"]
+    assert cals == [("Cal-27", "202701"), ("Cal-28", "202801"), ("Cal-29", "202901")]
+    assert all(c.short_code == "G3BM" for c in ttf if c.maturity_type == "Month")
+    # Passage d'année : la séance de décembre 2026 a M+1 = janvier 2027
+    dec = [c for c in rs.contracts_for(date(2026, 12, 15)) if c.marche == "Gaz PEG"]
+    assert dec[0].maturity == "202701" and dec[0].short_code == "G5BM"
+
+
+def test_mail_inchange_courbe_complete_stockee(monkeypatch, tmp_path):
+    monkeypatch.setattr(rs.requests, "get", fake_get())
+    history, fetched = rs.fetch_window(TODAY)
+    rows, errors = rs.report_rows(SESSION, fetched)
+    assert errors == [] and len(rows) == 18                  # même e-mail qu'avant
+    assert {r["contrat"] for r in rows if r["marche"] == "Gaz TTF"} == {"Month-Ahead", "Cal-27", "Cal-28"}
+    archive.upsert(history, tmp_path / "s.csv")
+    stored = archive.load_settlements(marche="Gaz TTF", path=tmp_path / "s.csv")
+    assert set(stored.loc[stored["session"] == SESSION, "contrat"]) == {
+        "Month-Ahead", "M+2", "M+3", "M+4", "M+5", "M+6", "Cal-27", "Cal-28", "Cal-29"}
+    assert "in_report" not in stored.columns
