@@ -29,6 +29,7 @@ jobs:
           repository: menckley/settlements-eex-data
           token: ${{ secrets.DATA_REPO_TOKEN }}   # jeton GitHub : Contents en lecture et écriture sur ce dépôt
           path: data
+          persist-credentials: false   # le jeton n'est pas laissé dans data/.git/config pendant le reste du job
 
       - name: Installer Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -51,6 +52,8 @@ jobs:
       - name: Committer l'historique dans le dépôt de données
         if: always()                 # l'historique est conservé même si l'envoi du mail échoue
         working-directory: data
+        env:
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}   # fourni à cette seule étape
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -59,5 +62,5 @@ jobs:
             echo "Rien de nouveau à stocker"
           else
             git commit -m "Historique settlements EEX $(date -u +%Y-%m-%d)"
-            git push
+            git push "https://x-access-token:${DATA_REPO_TOKEN}@github.com/menckley/settlements-eex-data.git" HEAD
           fi
