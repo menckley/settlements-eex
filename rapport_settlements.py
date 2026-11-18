@@ -39,6 +39,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate
@@ -47,6 +48,7 @@ import pandas as pd
 import requests
 
 import archive
+import signaux
 
 # =============================================================================
 # CONFIGURATION
@@ -96,6 +98,8 @@ REQUIRED_COLS = ("shortCode", "maturityDate", "tradeDate", "settlPx")
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 APERCU = MODE == "apercu"
+# Bloc « Signaux » (variations, z-score, spreads, courbe TTF) dans l'e-mail : désactivé par défaut.
+SIGNAUX = os.getenv("SIGNAUX", "").strip().lower() in ("1", "oui", "true", "yes")
 EXPLORE = MODE == "explorer"
 ERROR_RATE_MAX = 0.20  # au-delà, la collecte est jugée en échec (code de sortie non nul)
 HISTORY_DAYS = 60    # fenêtre interrogée à chaque lancement (EEX ne publie qu'environ 45 jours)
@@ -346,8 +350,9 @@ def variation(p: float | None, q: float | None) -> tuple[str, str]:
     return "= 0,00", "#555555"
 
 
-def build_report(rows: list[dict], errors: list[str], session: date) -> tuple[str, str, str]:
-    """Renvoie (objet, html, texte) de l'e-mail de rapport."""
+def build_report(rows: list[dict], errors: list[str], session: date,
+                 signaux: tuple[str, str] | None = None) -> tuple[str, str, str]:
+    """Renvoie (objet, html, texte) de l'e-mail de rapport. `signaux` = (html, texte) du bloc optionnel."""
     titre = f"Settlements EEX – séance du {session:%d/%m/%Y}"
     subject = f"[INCOMPLET] {titre}" if errors else titre
 
@@ -394,6 +399,7 @@ def build_report(rows: list[dict], errors: list[str], session: date) -> tuple[st
 <h2 style="margin:0 0 4px 0;font-size:20px;">Settlements EEX</h2>
 <p style="margin:0 0 4px 0;color:#555;">Séance du {fr_date(session)}</p>
 {''.join(sections_html)}
+{signaux[0] if signaux else ''}
 {warn_html}
 <p style="margin-top:24px;font-size:12px;color:#888;">Source : eex.com – données à titre informatif.
 GO : l'échéance de janvier A couvre la production de mars à décembre de l'année A-1.</p>
@@ -401,6 +407,7 @@ GO : l'échéance de janvier A couvre la production de mars à décembre de l'an
 
     text = (f"Settlements EEX – séance du {fr_date(session)}\n"
             + "\n".join(text_lines)
+            + (signaux[1] if signaux else "")
             + ("\n\nDonnées manquantes :\n- " + "\n- ".join(errors) if errors else "")
             + "\n\nSource : eex.com")
     return subject, html, text
@@ -428,7 +435,7 @@ modification de l'API eex.com, ou accès bloqué.</p>
 # =============================================================================
 # ENVOI
 # =============================================================================
-def send_email(subject: str, html: str, text: str) -> None:
+def send_email(subject: str, html: str, text: str, images: dict[str, bytes] | None = None) -> None:
     host, port = SMTP_HOST.strip(), int(SMTP_PORT)
     user, password = SMTP_USER, SMTP_PASSWORD
     sender, recipients = EMAIL_FROM, EMAIL_TO
@@ -441,7 +448,17 @@ def send_email(subject: str, html: str, text: str) -> None:
     msg["To"] = ", ".join(recipients)
     msg["Date"] = formatdate(localtime=True)
     msg.attach(MIMEText(text, "plain", "utf-8"))
-    msg.attach(MIMEText(html, "html", "utf-8"))
+    if images:   # images inline référencées dans le HTML par cid:<nom>
+        related = MIMEMultipart("related")
+        related.attach(MIMEText(html, "html", "utf-8"))
+        for cid, data in images.items():
+            img = MIMEImage(data, "png")
+            img.add_header("Content-ID", f"<{cid}>")
+            img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
+            related.attach(img)
+        msg.attach(related)
+    else:
+        msg.attach(MIMEText(html, "html", "utf-8"))
 
     if port == 465:
         with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
@@ -454,13 +471,17 @@ def send_email(subject: str, html: str, text: str) -> None:
             smtp.send_message(msg, sender, recipients)
 
 
-def deliver(subject: str, html: str, text: str) -> None:
+def deliver(subject: str, html: str, text: str, images: dict[str, bytes] | None = None) -> None:
     if APERCU:
+        for cid, data in (images or {}).items():
+            with open(f"apercu_{cid}.png", "wb") as f:
+                f.write(data)
+            html = html.replace(f"cid:{cid}", f"apercu_{cid}.png")
         with open("apercu_email.html", "w", encoding="utf-8") as f:
             f.write(html)
         print(f"Objet : {subject}\n\n{text}\n\n→ Aperçu enregistré dans apercu_email.html (rien n'a été envoyé)")
     else:
-        send_email(subject, html, text)
+        send_email(subject, html, text, images)
         print(f"E-mail envoyé : {subject}")
 
 
@@ -503,12 +524,35 @@ def collection_failure(history: list[dict], fetched: dict) -> str | None:
     return None
 
 
+def signals_block(history: list[dict], session: date) -> tuple[tuple[str, str] | None, dict[str, bytes]]:
+    """Bloc « Signaux » calculé depuis l'historique stocké fusionné aux lignes collectées.
+
+    Ne lève jamais : en cas de problème, l'e-mail part sans le bloc.
+    """
+    try:
+        try:
+            stored = archive.load_settlements()
+        except FileNotFoundError:
+            stored = pd.DataFrame(columns=archive.COLUMNS)
+        new = pd.DataFrame(history, columns=archive.COLUMNS)
+        df = pd.concat([stored, new], ignore_index=True).drop_duplicates(archive.KEY, keep="last")
+        built = signaux.build_signals(df, session)
+        if built is None:
+            return None, {}
+        html, text, png = built
+        return (html, text), ({"courbe": png} if png else {})
+    except Exception as e:   # option accessoire : jamais bloquante
+        print(f"Signaux ignorés : {e!r}")
+        return None, {}
+
+
 def main() -> None:
     if EXPLORE:
         explore()
         return
     session = target_session()
     failure = None
+    images: dict[str, bytes] = {}
     try:
         history, fetched = fetch_window(date.today())
         failure = collection_failure(history, fetched)
@@ -517,14 +561,15 @@ def main() -> None:
             print(f"Historique : {path} ({added} lignes ajoutées ou mises à jour, {total} au total)")
         rows, errors = report_rows(session, fetched)
         if any(r["settlement"] is not None for r in rows):
-            message = build_report(rows, errors, session)
+            extra, images = signals_block(history, session) if SIGNAUX else (None, {})
+            message = build_report(rows, errors, session, extra)
         else:
             message = build_not_found(errors, session)
     except Exception as e:  # erreur imprévue pendant la collecte : on prévient par e-mail
         failure = f"erreur inattendue : {e}"
         message = build_not_found([f"Erreur inattendue : {e}"], session, traceback.format_exc())
     try:
-        deliver(*message)
+        deliver(*message, images)
     except (smtplib.SMTPException, OSError) as e:
         raise SystemExit(f"\nÉchec de l'envoi de l'e-mail via {SMTP_HOST}:{SMTP_PORT} → {e!r}\n"
                          "Vérifier SMTP_HOST, SMTP_PORT, SMTP_USER et SMTP_PASSWORD.") from e
