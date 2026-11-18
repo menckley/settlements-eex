@@ -8,6 +8,11 @@ d'origine européennes), e-mail récapitulatif, et historique de tous les prix.
 Gaz TTF et PEG : toute la courbe des contrats vérifiés est stockée (Month-Ahead à M+6, Cal+1 à
 Cal+3, glissants) ; l'e-mail n'affiche que le Month-Ahead et les deux premiers Cal.
 
+Option `SIGNAUX=1` (désactivée par défaut) : ajoute à l'e-mail un bloc « Signaux » (variations 5/20 séances,
+position dans l'amplitude 52 semaines, alerte z-score > 2,5), des spreads (TTF–PEG, contango/backwardation,
+spark spread approché sans CO2) et un graphique de la courbe TTF jour / J-7 / J-30, calculés depuis l'historique
+stocké. Usage interne uniquement (licence EEX). Détails : [docs/specs/alertes-seuils-et-courbe-gaz.md](docs/specs/alertes-seuils-et-courbe-gaz.md).
+
 ## Historique
 
 Un seul fichier : **`data/settlements.csv`**, une ligne par séance et par contrat. Le dossier `data/` **n'est pas
