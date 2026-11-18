@@ -138,3 +138,45 @@ def test_mail_inchange_courbe_complete_stockee(monkeypatch, tmp_path):
     assert set(stored.loc[stored["session"] == SESSION, "contrat"]) == {
         "Month-Ahead", "M+2", "M+3", "M+4", "M+5", "M+6", "Cal-27", "Cal-28", "Cal-29"}
     assert "in_report" not in stored.columns
+
+
+def run_main(monkeypatch, getter):
+    monkeypatch.setattr(rs.requests, "get", getter)
+    monkeypatch.setattr(rs, "target_session", lambda: SESSION)
+    monkeypatch.setattr(rs, "APERCU", True)
+    monkeypatch.setattr(rs, "deliver", lambda *m: None)
+    monkeypatch.setattr(rs.archive, "upsert", lambda h: ("x", 0, 0))
+    monkeypatch.setattr(rs, "date", type("D", (date,), {"today": classmethod(lambda cls: TODAY)}))
+    rs.main()
+
+
+def test_main_sortie_zero_si_collecte_ok(monkeypatch):
+    run_main(monkeypatch, fake_get())
+
+
+def test_main_sortie_non_nulle_si_tout_echoue(monkeypatch):
+    with pytest.raises(SystemExit) as exc:
+        run_main(monkeypatch, fake_get(wrong_contract=True))
+    assert exc.value.code == 1
+
+
+def test_main_sortie_non_nulle_si_exception_inattendue(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boum")
+    monkeypatch.setattr(rs, "fetch_window", boom)
+    with pytest.raises(SystemExit) as exc:
+        run_main(monkeypatch, fake_get())
+    assert exc.value.code == 1
+
+
+def test_main_tolere_une_donnee_absente(monkeypatch):
+    run_main(monkeypatch, fake_get(missing={("EGOH", 202901)}))   # donnée absente : pas une erreur d'appel
+
+
+def test_collection_failure_seuil():
+    def fetched(n_ok, n_ko):
+        return {i: {"error": None if i < n_ok else "x"} for i in range(n_ok + n_ko)}
+    hist = [{"a": 1}]
+    assert rs.collection_failure(hist, fetched(4, 1)) is None   # 20 % : toléré
+    assert rs.collection_failure(hist, fetched(3, 2)) is not None
+    assert rs.collection_failure([], fetched(1, 0)) is not None

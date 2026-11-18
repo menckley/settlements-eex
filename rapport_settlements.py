@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import smtplib
+import sys
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -96,7 +97,8 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 
 APERCU = MODE == "apercu"
 EXPLORE = MODE == "explorer"
-HISTORY_DAYS = 60     # fenêtre interrogée à chaque lancement (EEX ne publie qu'environ 45 jours)
+ERROR_RATE_MAX = 0.20  # au-delà, la collecte est jugée en échec (code de sortie non nul)
+HISTORY_DAYS = 60    # fenêtre interrogée à chaque lancement (EEX ne publie qu'environ 45 jours)
 
 HEADERS = {
     "Accept": "application/json",
@@ -485,13 +487,31 @@ def explore() -> None:
         time.sleep(PAUSE)
 
 
+def collection_failure(history: list[dict], fetched: dict) -> str | None:
+    """Motif d'échec de la collecte (à signaler par un code de sortie non nul), sinon None.
+
+    Seules les erreurs d'appel ou de format comptent : une réponse vide (jour férié sans séance)
+    n'est pas une erreur. La fenêtre couvre HISTORY_DAYS jours : un historique vide signifie
+    donc que tout a échoué, pas seulement qu'EEX n'a pas tenu de séance.
+    """
+    requests_done = list({id(f): f for f in fetched.values()}.values())   # une requête sert plusieurs contrats
+    n_errors = sum(1 for f in requests_done if f["error"])
+    if requests_done and n_errors / len(requests_done) > ERROR_RATE_MAX:
+        return f"{n_errors} contrats en erreur sur {len(requests_done)} (seuil {ERROR_RATE_MAX:.0%})"
+    if not history:
+        return "aucun settlement collecté sur la fenêtre"
+    return None
+
+
 def main() -> None:
     if EXPLORE:
         explore()
         return
     session = target_session()
+    failure = None
     try:
         history, fetched = fetch_window(date.today())
+        failure = collection_failure(history, fetched)
         if history and not APERCU:
             path, added, total = archive.upsert(history)
             print(f"Historique : {path} ({added} lignes ajoutées ou mises à jour, {total} au total)")
@@ -501,12 +521,16 @@ def main() -> None:
         else:
             message = build_not_found(errors, session)
     except Exception as e:  # erreur imprévue pendant la collecte : on prévient par e-mail
+        failure = f"erreur inattendue : {e}"
         message = build_not_found([f"Erreur inattendue : {e}"], session, traceback.format_exc())
     try:
         deliver(*message)
     except (smtplib.SMTPException, OSError) as e:
         raise SystemExit(f"\nÉchec de l'envoi de l'e-mail via {SMTP_HOST}:{SMTP_PORT} → {e!r}\n"
                          "Vérifier SMTP_HOST, SMTP_PORT, SMTP_USER et SMTP_PASSWORD.") from e
+    if failure:   # l'e-mail d'alerte est parti : on fait échouer le job pour la notification GitHub
+        print(f"Collecte en échec : {failure}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
