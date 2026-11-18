@@ -180,3 +180,65 @@ def test_collection_failure_seuil():
     assert rs.collection_failure(hist, fetched(4, 1)) is None   # 20 % : toléré
     assert rs.collection_failure(hist, fetched(3, 2)) is not None
     assert rs.collection_failure([], fetched(1, 0)) is not None
+
+
+def _row(session=SESSION, short_code="EGOS", maturity="202701", product="Renewable Power", settlement=10.0):
+    return {"session": session, "marche": "GO", "contrat": "Cal-27", "echeance": "Cal-27", "commodity": "GO",
+            "area": "EU", "product": product, "short_code": short_code, "maturity": maturity,
+            "maturity_type": "Year", "settlement": settlement, "devise": "EUR", "unite": "MWh"}
+
+
+def test_upsert_double_appel_identique_zero_modifiee(tmp_path):
+    f = tmp_path / "s.csv"
+    rows = [_row(), _row(short_code="EGOH", settlement=11.5)]
+    _, changed1, total1 = archive.upsert(rows, f)
+    _, changed2, total2 = archive.upsert(rows, f)
+    assert (changed1, total1) == (2, 2)
+    assert (changed2, total2) == (0, 2)
+
+
+def test_upsert_correction_d_un_settlement(tmp_path):
+    f = tmp_path / "s.csv"
+    archive.upsert([_row(), _row(short_code="EGOH", settlement=11.5)], f)
+    _, changed, total = archive.upsert([_row(settlement=12.0)], f)
+    assert (changed, total) == (1, 2)
+    df = archive.load_settlements(path=f).set_index("short_code")
+    assert df.loc["EGOS", "settlement"] == 12.0 and df.loc["EGOH", "settlement"] == 11.5
+
+
+def test_upsert_conserve_les_lignes_absentes_de_rows(tmp_path):
+    f = tmp_path / "s.csv"
+    archive.upsert([_row(session=date(2026, 10, 12), settlement=9.0)], f)
+    _, changed, total = archive.upsert([_row(session=SESSION)], f)
+    assert (changed, total) == (1, 2)
+    df = archive.load_settlements(path=f)
+    assert df["session"].tolist() == [date(2026, 10, 12), SESSION]
+    assert df["settlement"].tolist() == [9.0, 10.0]
+
+
+def test_upsert_refuse_colonnes_absentes_et_doublons(tmp_path):
+    f = tmp_path / "s.csv"
+    with pytest.raises(ValueError, match="colonnes absentes"):
+        archive.upsert([{"session": SESSION, "settlement": 1.0}], f)
+    with pytest.raises(ValueError, match="doublons"):
+        archive.upsert([_row(), _row(settlement=11.0)], f)
+    assert not f.exists()
+
+
+def test_upsert_csv_corrompu_ne_modifie_pas_le_fichier(tmp_path):
+    f = tmp_path / "s.csv"
+    content = "session,marche\n2026-10-13,a,b,c\n"
+    f.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError):                       # pandas.errors.ParserError hérite de ValueError
+        archive.upsert([_row()], f)
+    assert f.read_text(encoding="utf-8") == content
+    assert not f.with_suffix(".csv.tmp").exists()
+
+
+def test_upsert_csv_sans_colonne_session_leve_une_erreur(tmp_path):
+    f = tmp_path / "s.csv"
+    content = "marche,settlement\nGO,1.0\n"
+    f.write_text(content, encoding="utf-8")
+    with pytest.raises(KeyError):
+        archive.upsert([_row()], f)
+    assert f.read_text(encoding="utf-8") == content
