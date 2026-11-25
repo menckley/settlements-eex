@@ -1,6 +1,6 @@
 # Versions épinglées (testées avec Python 3.12). Dépendances directes : requests, pandas.
 # Mises à jour proposées par Dependabot (pip).
-certifi==2026.10.23
+certifi==2026.11.20
 charset-normalizer==3.5.2
 idna==3.20
 numpy==2.5.5
