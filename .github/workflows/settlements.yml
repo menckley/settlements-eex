@@ -2,7 +2,7 @@ name: Settlements EEX
 
 on:
   schedule:
-    - cron: "0 5 * * *"        # tous les jours à 05:00
+    - cron: "0 2 * * *"        # tous les jours à 02:00
       timezone: "Europe/Paris"   # heure de Paris, été comme hiver
   workflow_dispatch:             # bouton "Run workflow" pour lancer à la main
 
